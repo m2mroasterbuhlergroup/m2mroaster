@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "commonjs",
+  "author": "Sasikumar Kesavan",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js"

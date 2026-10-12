@@ -3,7 +3,8 @@ const TODAY = new Date();
 const START_Y = TODAY.getFullYear(), START_M = TODAY.getMonth() + 1;
 // Earliest selectable month: the oldest saved roster, or the current month when none exist.
 let EARLIEST_Y = START_Y, EARLIEST_M = START_M;
-const STATUSES = ["", "WFO", "WFH", "Leave", "Weekly Off", "Holiday"];
+const STATUSES = ["", "WFO", "WFH", "WFH Half Leave", "WFO Half Leave", "Leave", "Weekly Off", "Holiday"];
+const STATUS_LABELS = { "WFH Half Leave": "WFH + H/L", "WFO Half Leave": "WFO + H/L" };
 let data;
 let ADMIN_AUTHENTICATED = false;
 let unsavedChanges = false;
@@ -256,7 +257,7 @@ function render() {
                 const value = roster?.schedule?.[day]?.[member] || "";
                 html += `<td><select class="status ${statusClass(value)}" ${ADMIN_AUTHENTICATED ? "" : "disabled"}
       onchange='setStatus(${day},${JSON.stringify(member)},this.value,this)'>
-      ${STATUSES.map(s => `<option value="${esc(s)}" ${s === value ? "selected" : ""}>${esc(s)}</option>`).join("")}
+    ${STATUSES.map(s => `<option value="${esc(s)}" title="${esc(s)}" ${s === value ? "selected" : ""}>${esc(STATUS_LABELS[s] || s)}</option>`).join("")}
       </select></td>`;
             }
             html += "</tr>";
@@ -270,27 +271,32 @@ function render() {
     table.innerHTML = html + "</tbody>";
     showSummary(roster, departments);
 }
-function showSummary(roster, visibleDepartments = null) {
-    const counts = { WFO: 0, WFH: 0, Leave: 0, "Weekly Off": 0, Holiday: 0 };
-    if (roster) Object.values(roster.schedule || {}).forEach(day => {
-        Object.values(day).forEach(value => { if (value in counts) counts[value]++ });
-    });
-    const departmentsForSummary = visibleDepartments || (roster?.departments || data.departments);
+function showSummary(roster, visibleDepartments = null, visibleDays = null) {
+    const counts = { WFO: 0, WFH: 0, "WFH Half Leave": 0, "WFO Half Leave": 0, Leave: 0, "Weekly Off": 0, Holiday: 0 };
+    const selectedDepartment = document.getElementById("departmentFilter")?.value || "all";
+    const allDepartments = roster?.departments || data.departments;
+    const departmentsForSummary = visibleDepartments || (selectedDepartment === "all"
+        ? allDepartments
+        : allDepartments.filter((department, index) => String(index) === selectedDepartment));
     const visibleMembers = new Set(departmentsForSummary.flatMap(department => department.members));
+    const visibleDaySet = visibleDays === null ? null : new Set(visibleDays);
     const departmentCount = departmentsForSummary.length;
     const memberCount = visibleMembers.size;
-    if (roster && visibleDepartments) {
-        Object.keys(counts).forEach(status => counts[status] = 0);
-        Object.values(roster.schedule || {}).forEach(day => {
+    if (roster) {
+        Object.entries(roster.schedule || {}).forEach(([dayNumber, day]) => {
+            if (visibleDaySet && !visibleDaySet.has(Number(dayNumber))) return;
             Object.entries(day).forEach(([member, value]) => {
-                if (visibleMembers.has(member) && value in counts) counts[value]++;
+                if (visibleMembers.has(member) && value !== "Holiday" && value in counts) counts[value]++;
             });
         });
+        counts.Holiday = Object.entries(roster.holidays || {}).filter(([dayNumber, name]) =>
+            name && (!visibleDaySet || visibleDaySet.has(Number(dayNumber)))
+        ).length;
     }
     summary.innerHTML =
         `<span class="stat">Departments <b>${departmentCount}</b></span>` +
         `<span class="stat">Members <b>${memberCount}</b></span>` +
-        Object.entries(counts).map(([name, value]) => `<span class="stat">${name} <b>${value}</b></span>`).join("");
+        Object.entries(counts).map(([name, value]) => `<span class="stat" title="${esc(name)}">${esc(STATUS_LABELS[name] || name)} <b>${value}</b></span>`).join("");
 }
 async function setStatus(day, member, value, select) {
     if (!requireAdmin()) return;
@@ -533,6 +539,9 @@ document.addEventListener("keydown", event => {
         .querySelectorAll("#weekFilter")
         .forEach((element) => element.remove());
 
+    document.querySelectorAll(".day-filter-wrapper, #dayFilter")
+        .forEach(element => element.remove());
+
     /*
       Create one week-filter control.
     */
@@ -563,6 +572,35 @@ document.addEventListener("keydown", event => {
 
     const weekFilter =
         document.getElementById("weekFilter");
+
+        const dayWrapper = document.createElement("div");
+        dayWrapper.className = "day-filter-wrapper";
+        dayWrapper.innerHTML = `
+        <label for="dayFilter">Filter Day</label>
+        <div class="day-filter-control">
+            <input id="dayFilter" class="day-picker" type="date" inputmode="none" title="Filter day: all days">
+            <span id="selectedDay" class="selected-date" aria-live="polite">All Days</span>
+        </div>
+    `;
+        weekWrapper.insertAdjacentElement("afterend", dayWrapper);
+        const dayFilter = document.getElementById("dayFilter");
+        const selectedDay = document.getElementById("selectedDay");
+
+    function openDayPicker() {
+        if (!dayFilter.disabled && typeof dayFilter.showPicker === "function") {
+            dayFilter.showPicker();
+        }
+    }
+
+    dayFilter.addEventListener("click", openDayPicker);
+    dayFilter.addEventListener("keydown", event => {
+        if (event.key === "Tab" || event.key === "Escape") return;
+        event.preventDefault();
+        if (event.key === "Enter" || event.key === " ") openDayPicker();
+    });
+    ["beforeinput", "paste", "drop"].forEach(eventType => {
+        dayFilter.addEventListener(eventType, event => event.preventDefault());
+    });
 
     /*
       Return the week number within the selected month.
@@ -731,7 +769,7 @@ document.addEventListener("keydown", event => {
     /*
       Return the day numbers that should remain visible.
     */
-    function getVisibleDays() {
+    function getWeekDays() {
         const selectedYear = Number(
             yearInput.value
         );
@@ -739,6 +777,8 @@ document.addEventListener("keydown", event => {
         const selectedMonth = Number(
             monthSelect.value
         );
+
+        if (!selectedYear || !selectedMonth) return [];
 
         const daysInMonth = new Date(
             selectedYear,
@@ -768,6 +808,31 @@ document.addEventListener("keydown", event => {
         );
     }
 
+    function updateDayRange() {
+        const days = getWeekDays();
+        const datePrefix = `${String(yearInput.value).padStart(4, "0")}-${String(monthSelect.value).padStart(2, "0")}`;
+        const formatDay = day => `${datePrefix}-${String(day).padStart(2, "0")}`;
+        dayFilter.min = days.length ? formatDay(days[0]) : "";
+        dayFilter.max = days.length ? formatDay(days[days.length - 1]) : "";
+        dayFilter.disabled = days.length === 0;
+        if (dayFilter.disabled || dayFilter.value < dayFilter.min || dayFilter.value > dayFilter.max) {
+            dayFilter.value = "";
+        }
+        const date = dayFilter.valueAsDate;
+        selectedDay.textContent = date
+            ? `${String(date.getUTCDate()).padStart(2, "0")}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCFullYear()).padStart(4, "0")}`
+            : "All Days";
+        dayFilter.title = `Filter day: ${selectedDay.textContent}`;
+        dayFilter.setAttribute("aria-label", dayFilter.title);
+    }
+
+    function getVisibleDays() {
+        const days = getWeekDays();
+        return !dayFilter.value
+            ? days
+            : days.filter(day => day === dayFilter.valueAsDate?.getUTCDate());
+    }
+
     /*
       Hide table columns that do not belong to
       the selected week.
@@ -780,11 +845,15 @@ document.addEventListener("keydown", event => {
             return;
         }
 
+        updateDayRange();
+
         const visibleDays =
             getVisibleDays();
 
         const visibleDaySet =
             new Set(visibleDays);
+
+        if (data) showSummary(data, null, visibleDays);
 
         table
             .querySelectorAll("tr")
@@ -848,6 +917,8 @@ document.addEventListener("keydown", event => {
         applyWeekFilter
     );
 
+    dayFilter.addEventListener("change", applyWeekFilter);
+
     /*
       Update the week list when the month changes.
       The existing periodChanged() function will
@@ -883,6 +954,7 @@ document.addEventListener("keydown", event => {
     if (typeof originalRender === "function") {
         window.render = function (...args) {
             originalRender.apply(this, args);
+            rebuildWeekOptions();
             applyWeekFilter();
         };
     }
@@ -910,5 +982,25 @@ document.addEventListener("keydown", event => {
     */
     rebuildWeekOptions();
     applyWeekFilter();
+})();
+
+(function setupTableHeight() {
+    const tableWrapper = document.querySelector(".tablewrap");
+    const pageWrapper = document.querySelector(".wrap");
+    const panel = document.querySelector(".panel");
+    if (!tableWrapper || !pageWrapper || !panel) return;
+
+    function updateTableHeight() {
+        const bottomPadding = parseFloat(getComputedStyle(pageWrapper).paddingBottom) || 0;
+        const bottomBorder = parseFloat(getComputedStyle(panel).borderBottomWidth) || 0;
+        const offset = tableWrapper.getBoundingClientRect().top + bottomPadding + bottomBorder;
+        tableWrapper.style.setProperty("--table-vertical-offset", `${offset}px`);
+    }
+
+    const observer = new ResizeObserver(updateTableHeight);
+    document.querySelectorAll("header, .banner, .toolbar, .legend, .summary")
+        .forEach(element => observer.observe(element));
+    window.addEventListener("resize", updateTableHeight);
+    updateTableHeight();
 })();
 init();
